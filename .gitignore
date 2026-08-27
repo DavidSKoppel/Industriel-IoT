@@ -1,0 +1,43 @@
+# Zephyr / nRF Connect SDK build output
+build/
+build-*/
+out/
+
+# Firmware and other generated build files
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.o
+*.obj
+*.a
+*.zip
+*.uf2
+*.d
+
+# SDK-managed directories (keep the SDK outside this application repository)
+.west/
+modules/
+toolchains/
+ncs/
+zephyr/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.user
+*.suo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+secrets.*

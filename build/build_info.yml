@@ -1,0 +1,4 @@
+west:
+  command: /home/lasse/zephyrproject/.venv/bin/west build -p -b thingy91x/nrf9151/ns
+  topdir: /home/lasse
+  version: 1.5.0

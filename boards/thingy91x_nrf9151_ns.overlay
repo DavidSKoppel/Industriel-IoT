@@ -36,3 +36,9 @@
 		reg = <0x8800 0x2f800>;
 	};
 };
+
+
+/* Enable the onboard BME680 environmental sensor. */
+&bme680 {
+	status = "okay";
+};

@@ -7,7 +7,7 @@ C++ MQTT subscriber for Thingy:91 X sensor readings. It connects to the Webdock 
 Clone the CMake-enabled branch from GitHub and enter the repository folder:
 
 ```sh
-git clone --branch issue-12-linux-cmake https://github.com/DavidSKoppel/Industriel-IoT.git
+git clone --branch Linux-Cmake https://github.com/DavidSKoppel/Industriel-IoT.git
 cd Industriel-IoT
 ```
 

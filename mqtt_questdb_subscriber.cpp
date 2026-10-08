@@ -5,9 +5,11 @@
 #include <pqxx/pqxx>
 
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -20,17 +22,24 @@ const std::string SERVER_ADDRESS = "ssl://gruppe7.vps.webdock.cloud:8883";
 const std::string CLIENT_ID = "thingy91x-questdb-subscriber";
 const std::string SENSOR_TOPIC = "thingy91x-01/data";
 
-// QuestDB PostgreSQL wire-protocol connection (QuestDB runs on this machine).
-const std::string DB_CONNECTION =
-    "host=localhost "
-    "port=8812 "
-    "dbname=qdb "
-    "user=admin "
-    "password=quest";
+// QuestDB runs on this machine. Keep its password out of the source and binary.
+static std::string db_connection()
+{
+    const char *password = std::getenv("QUESTDB_PASSWORD");
+    if (password == nullptr || password[0] == '\0') {
+        throw std::runtime_error("QUESTDB_PASSWORD environment variable is not set");
+    }
+
+    return "host=localhost "
+           "port=8812 "
+           "dbname=qdb "
+           "user=admin "
+           "password=" + std::string(password);
+}
 
 static void ensure_questdb_table()
 {
-    pqxx::connection conn(DB_CONNECTION);
+    pqxx::connection conn(db_connection());
     pqxx::work txn(conn);
 
     txn.exec(
@@ -108,7 +117,7 @@ public:
             const double pressure_kpa = data.at("pressure_kpa").get<double>();
             const double gas_ohm = data.at("gas_ohm").get<double>();
 
-            pqxx::connection conn(DB_CONNECTION);
+            pqxx::connection conn(db_connection());
             pqxx::work txn(conn);
             txn.exec_params(
                 "INSERT INTO thingy91x_data "

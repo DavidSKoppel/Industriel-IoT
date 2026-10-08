@@ -32,7 +32,13 @@ The executable will be created at `build/mqtt_questdb_subscriber`. `cmake -S . -
 
 ## Run
 
-QuestDB must be running on the same machine and accept PostgreSQL wire-protocol connections on port `8812`. The current source has a database connection string in `DB_CONNECTION`; update it for your local QuestDB settings before running.
+QuestDB must be running on the same machine and accept PostgreSQL wire-protocol
+connections on port `8812`. Set the database password in the environment before
+running the subscriber; do not put it in the source code or commit it:
+
+```sh
+export QUESTDB_PASSWORD='your-QuestDB-password'
+```
 
 If the broker's CA certificate is installed in the system trust store:
 

@@ -149,12 +149,15 @@ static int bd_seq_settings_init(void)
 
 	err = settings_load_one(BD_SEQ_SETTINGS_KEY, &previous_bd_seq,
 				sizeof(previous_bd_seq));
-	if (err == -ENOENT) {
+	if (err == -ENOENT || err == 0) {
 		bd_seq = 0U;
 		return 0;
 	}
-	if (err != 0) {
+	if (err < 0) {
 		return err;
+	}
+	if (err != sizeof(previous_bd_seq)) {
+		return -EINVAL;
 	}
 
 	bd_seq = (uint8_t)(previous_bd_seq + 1U);

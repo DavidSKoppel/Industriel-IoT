@@ -4,7 +4,10 @@
 # SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
 #
 
-target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/transport.c)
+target_sources(app PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/transport.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/sparkplug_codec.c
+)
 
 # Add Client ID helper library
 add_subdirectory(client_id)

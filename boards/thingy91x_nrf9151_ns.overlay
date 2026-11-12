@@ -16,6 +16,11 @@
 	};
 };
 
+/* Enable the onboard BME680 environmental sensor. */
+&bme680 {
+	status = "okay";
+};
+
 /* Increase modem (shared) memory and add trace partition. */
 &sram0_ns_modem {
 	reg = <0x0 0x8800>;
@@ -35,10 +40,4 @@
 		/* Redefine smaller Non-Secure application memory. */
 		reg = <0x8800 0x2f800>;
 	};
-};
-
-
-/* Enable the onboard BME680 environmental sensor. */
-&bme680 {
-	status = "okay";
 };

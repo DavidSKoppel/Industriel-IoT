@@ -7,9 +7,12 @@
 #ifndef _MESSAGE_CHANNEL_H_
 #define _MESSAGE_CHANNEL_H_
 
+#include <stdint.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/logging/log_ctrl.h>
+#include <zephyr/zbus/zbus.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,8 +29,16 @@ extern "C" {
 		IF_ENABLED(CONFIG_REBOOT, (sys_reboot(0)));					\
 	}
 
+/* Sensor sample passed from the sampler to the MQTT transport. The transport
+ * encodes this into the Sparkplug B Protobuf payload before publishing it.
+ */
 struct payload {
-	char string[CONFIG_MQTT_SAMPLE_PAYLOAD_CHANNEL_STRING_MAX_SIZE];
+	uint64_t timestamp_ms;
+	uint32_t uptime_ms;
+	double temperature_c;
+	double humidity_pct;
+	double pressure_kpa;
+	double gas_ohm;
 };
 
 enum network_status {

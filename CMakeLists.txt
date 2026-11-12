@@ -1,23 +1,18 @@
-#
-# Copyright (c) 2023 Nordic Semiconductor ASA
-#
-# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
-#
+cmake_minimum_required(VERSION 3.16)
 
-cmake_minimum_required(VERSION 3.20.0)
+project(mqtt_questdb_subscriber LANGUAGES CXX)
 
-find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(mqtt)
+add_executable(mqtt_questdb_subscriber
+    mqtt_questdb_subscriber.cpp
+)
 
-# Include files that are common for all modules
-add_subdirectory(src/common)
+target_compile_features(mqtt_questdb_subscriber PRIVATE cxx_std_17)
 
-# Include mandatory module source folders
-add_subdirectory(src/modules/trigger)
-add_subdirectory(src/modules/sampler)
-add_subdirectory(src/modules/network)
-add_subdirectory(src/modules/transport)
-add_subdirectory(src/modules/error)
+find_package(PahoMqttCpp REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PQXX REQUIRED IMPORTED_TARGET libpqxx)
 
-# Optional modules
-add_subdirectory_ifdef(CONFIG_MQTT_SAMPLE_LED src/modules/led)
+target_link_libraries(mqtt_questdb_subscriber PRIVATE
+    PahoMqttCpp::paho-mqttpp3
+    PkgConfig::PQXX
+)

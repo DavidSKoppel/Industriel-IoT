@@ -1,1 +1,0 @@
-"mcuboot":"/home/lasse/bootloader/mcuboot":"/home/lasse/bootloader/mcuboot/boot/zephyr/sysbuild"

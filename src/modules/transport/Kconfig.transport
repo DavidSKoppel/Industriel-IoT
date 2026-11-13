@@ -14,6 +14,31 @@ config MQTT_SAMPLE_TRANSPORT_RECONNECTION_TIMEOUT_SECONDS
 	help
 	  Time in between reconnection attempts to the MQTT broker.
 
+config MQTT_SAMPLE_TRANSPORT_DUMP_SAMPLE_COUNT
+	int "Sensor samples per MQTT transmission burst"
+	range 1 256
+	default 30
+	help
+	  Number of sensor samples to collect before connecting to MQTT and
+	  publishing them as individual Sparkplug NDATA messages in one burst.
+	  With the current 10-second sampling interval, the default collects about
+	  five minutes of readings.
+
+config MQTT_SAMPLE_TRANSPORT_SAMPLE_BUFFER_SIZE
+	int "Sensor sample buffer size"
+	range 1 512
+	default 32
+	help
+	  Maximum number of sensor samples held in RAM while waiting to publish.
+	  The buffer must be at least as large as the batch sample count.
+
+config MQTT_SAMPLE_TRANSPORT_PUBLISH_NDEATH_AFTER_DUMP
+	bool "Publish Sparkplug NDEATH after each MQTT batch"
+	default y
+	help
+	  Publish a Sparkplug NDEATH message before closing the MQTT connection
+	  after each batch, so the host can mark the node offline during the sleep period.
+
 config MQTT_SAMPLE_TRANSPORT_THREAD_STACK_SIZE
 	int "Thread stack size"
 	default 2048

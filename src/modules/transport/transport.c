@@ -76,6 +76,25 @@ static bool active_connection_seen;
 static uint8_t bd_seq;
 static uint8_t data_sequence;
 
+/* Sample stockpile.
+ *
+ * Samples arrive on PAYLOAD_CHAN every trigger interval, but they are only transmitted in one
+ * burst ("dump") once CONFIG_MQTT_SAMPLE_TRANSPORT_DUMP_SAMPLE_COUNT of them have been collected.
+ * The MQTT connection only exists while a dump is in progress, so between dumps the modem is
+ * idle and can enter PSM.
+ *
+ * The ring buffer is only accessed from the transport thread, so it needs no locking.
+ */
+BUILD_ASSERT(CONFIG_MQTT_SAMPLE_TRANSPORT_SAMPLE_BUFFER_SIZE >=
+	     CONFIG_MQTT_SAMPLE_TRANSPORT_DUMP_SAMPLE_COUNT,
+	     "The sample buffer must be able to hold at least one full dump");
+
+static struct payload sample_buf[CONFIG_MQTT_SAMPLE_TRANSPORT_SAMPLE_BUFFER_SIZE];
+static size_t sample_head;	/* Index of the oldest stockpiled sample */
+static size_t sample_count;	/* Number of stockpiled samples */
+static bool dump_requested;	/* A dump is due (or in progress) and the broker should be connected */
+static bool delay_next_connect;	/* Wait for the reconnection timeout before the next attempt */
+
 enum transport_event_type {
 	CONNECTED,
 	DISCONNECTED,
@@ -290,8 +309,110 @@ static int sparkplug_publish_death(void)
 				   MQTT_QOS_1_AT_LEAST_ONCE);
 }
 
+/* Append a sample to the stockpile. If the buffer is full the oldest sample is dropped. */
+static void sample_buf_push(const struct payload *sample)
+{
+	if (sample_count == ARRAY_SIZE(sample_buf)) {
+		sample_head = (sample_head + 1U) % ARRAY_SIZE(sample_buf);
+		sample_count--;
+		LOG_WRN("Sample buffer full, dropping the oldest sample");
+	}
+
+	sample_buf[(sample_head + sample_count) % ARRAY_SIZE(sample_buf)] = *sample;
+	sample_count++;
+}
+
+/* Oldest stockpiled sample, or NULL if the stockpile is empty. */
+static const struct payload *sample_buf_peek(void)
+{
+	return sample_count > 0U ? &sample_buf[sample_head] : NULL;
+}
+
+/* Remove the oldest stockpiled sample. */
+static void sample_buf_pop(void)
+{
+	if (sample_count > 0U) {
+		sample_head = (sample_head + 1U) % ARRAY_SIZE(sample_buf);
+		sample_count--;
+	}
+}
+
+/* Publish every stockpiled sample as its own NDATA message, oldest first. Each message keeps
+ * the timestamp the sample was taken at. A sample is only removed from the stockpile once it
+ * has been handed to the MQTT library, so a failed dump loses nothing.
+ */
+static int dump_samples(void)
+{
+	const struct payload *sample;
+	unsigned int sent = 0U;
+	int err;
+
+	while ((sample = sample_buf_peek()) != NULL) {
+		err = sparkplug_publish_data(sample);
+		if (err != 0) {
+			LOG_ERR("Dump interrupted after %u samples, %u still buffered", sent,
+				(unsigned int)sample_count);
+			return err;
+		}
+		sample_buf_pop();
+		sent++;
+	}
+
+	LOG_INF("Dump complete, %u samples published", sent);
+	return 0;
+}
+
+/* Called right after a successful NBIRTH: send everything that was stockpiled, then close the
+ * connection so that the modem can go back to sleep.
+ */
+static void dump_and_disconnect(struct s_object *user_object)
+{
+	ARG_UNUSED(user_object);
+
+	if (dump_samples() != 0) {
+		/* The unsent samples stay buffered. Drop the connection and let the normal
+		 * reconnect path retry once the reconnection timeout has elapsed.
+		 */
+		delay_next_connect = true;
+		(void)mqtt_helper_disconnect();
+		return;
+	}
+
+	dump_requested = false;
+
+	/* A clean MQTT disconnect does not make the broker send the Last Will, so tell the host
+	 * explicitly that the node is going offline. node_born is deliberately left set here:
+	 * connected_exit() clears it once the disconnect has actually happened, which also
+	 * prevents a second NBIRTH from being published on this connection.
+	 */
+	if (IS_ENABLED(CONFIG_MQTT_SAMPLE_TRANSPORT_PUBLISH_NDEATH_AFTER_DUMP)) {
+		(void)sparkplug_publish_death();
+	}
+
+	LOG_INF("Closing the MQTT connection until the next dump");
+	(void)mqtt_helper_disconnect();
+}
+
+/* Start a dump (connect to the broker) once enough samples have been stockpiled. */
+static void maybe_start_dump(void)
+{
+	if (dump_requested || sample_count < CONFIG_MQTT_SAMPLE_TRANSPORT_DUMP_SAMPLE_COUNT) {
+		return;
+	}
+
+	dump_requested = true;
+	LOG_INF("%u samples stockpiled, connecting to dump them", (unsigned int)sample_count);
+
+	/* If the network is down the connect is scheduled when it comes back up. */
+	if (s_obj.status == NETWORK_CONNECTED) {
+		k_work_reschedule_for_queue(&transport_queue, &connect_work, K_NO_WAIT);
+	}
+}
+
 static int maybe_publish_birth(struct s_object *user_object)
 {
+	const struct payload *birth_sample;
+	bool from_stockpile;
 	int err;
 
 	if (!user_object->host_online || !user_object->host_state_subscribed ||
@@ -302,9 +423,22 @@ static int maybe_publish_birth(struct s_object *user_object)
 		return 0;
 	}
 
-	err = sparkplug_publish_birth(&user_object->payload);
+	/* The NBIRTH carries the oldest stockpiled sample. It is then removed from the stockpile
+	 * so the dump that follows stays chronological and no reading is published twice.
+	 */
+	birth_sample = sample_buf_peek();
+	from_stockpile = (birth_sample != NULL);
+	if (!from_stockpile) {
+		birth_sample = &user_object->payload;
+	}
+
+	err = sparkplug_publish_birth(birth_sample);
 	if (err == 0) {
+		if (from_stockpile) {
+			sample_buf_pop();
+		}
 		user_object->node_born = true;
+		dump_and_disconnect(user_object);
 	}
 	return err;
 }
@@ -605,11 +739,19 @@ static void disconnected_entry(void *o)
 {
 	struct s_object *user_object = o;
 
-	/* Reschedule a connection attempt if we are connected to network and we enter the
-	 * disconnected state.
+	/* Reschedule a connection attempt if we are connected to network, we enter the
+	 * disconnected state and a dump is still due. Between dumps the broker connection is
+	 * intentionally left closed so that the modem can sleep.
 	 */
-	if (user_object->status == NETWORK_CONNECTED) {
-		k_work_reschedule_for_queue(&transport_queue, &connect_work, K_NO_WAIT);
+	if (user_object->status == NETWORK_CONNECTED && dump_requested) {
+		k_timeout_t delay = K_NO_WAIT;
+
+		if (delay_next_connect) {
+			delay = K_SECONDS(CONFIG_MQTT_SAMPLE_TRANSPORT_RECONNECTION_TIMEOUT_SECONDS);
+			delay_next_connect = false;
+		}
+
+		k_work_reschedule_for_queue(&transport_queue, &connect_work, delay);
 	}
 }
 
@@ -625,7 +767,8 @@ static enum smf_state_result disconnected_run(void *o)
 		k_work_cancel_delayable(&connect_work);
 	}
 
-	if ((user_object->status == NETWORK_CONNECTED) && (user_object->chan == &NETWORK_CHAN)) {
+	if ((user_object->status == NETWORK_CONNECTED) && (user_object->chan == &NETWORK_CHAN) &&
+	    dump_requested) {
 
 		/* Wait for 5 seconds to ensure that the network stack is ready before
 		 * attempting to connect to MQTT. This delay is only needed when building for
@@ -691,19 +834,10 @@ static enum smf_state_result connected_run(void *o)
 		return SMF_EVENT_HANDLED;
 	}
 
-	if (user_object->chan != &PAYLOAD_CHAN || !user_object->host_online) {
-		return SMF_EVENT_HANDLED;
-	}
-
-	if (!user_object->node_born) {
-		(void)maybe_publish_birth(user_object);
-	}
-	if (!user_object->node_born) {
-		return SMF_EVENT_HANDLED;
-	}
-
-	(void)sparkplug_publish_data(&user_object->payload);
-
+	/* Samples are stockpiled in transport_task() and transmitted in one burst from
+	 * maybe_publish_birth() once the Sparkplug session is established, so there is nothing
+	 * to do per sample here.
+	 */
 	return SMF_EVENT_HANDLED;
 }
 
@@ -806,12 +940,9 @@ static void transport_task(void)
 			s_obj.payload = payload;
 			s_obj.sample_seen = true;
 
-			err = smf_run_state(SMF_CTX(&s_obj));
-			if (err) {
-				LOG_ERR("smf_run_state, error: %d", err);
-				SEND_FATAL_ERROR();
-				return;
-			}
+			/* Stockpile the sample; connect and dump once enough have been collected. */
+			sample_buf_push(&payload);
+			maybe_start_dump();
 		}
 
 		if (&TRANSPORT_PRIVATE_CHANNEL == chan) {
@@ -854,6 +985,8 @@ static void transport_task(void)
 						s_obj.node_born = false;
 					}
 					s_obj.host_online = false;
+					/* The stockpile is kept; retry after the timeout. */
+					delay_next_connect = true;
 					(void)mqtt_helper_disconnect();
 				}
 				break;

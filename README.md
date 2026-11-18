@@ -10,7 +10,7 @@ git clone --branch mqtt-sparkplug-subscriber https://github.com/DavidSKoppel/Ind
 cd ~/thingy91x-sparkplug
 sudo apt install build-essential cmake pkg-config libssl-dev libpaho-mqtt-dev libpaho-mqttpp-dev libpqxx-dev
 cmake -S . -B build
-cmake --build build --parallel 2
+cmake --build build --parallel 1
 ctest --test-dir build --output-on-failure
 ```
 

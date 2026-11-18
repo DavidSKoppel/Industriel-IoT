@@ -20,6 +20,8 @@ target_link_libraries(mqtt_questdb_subscriber PRIVATE
 include(CTest)
 if(BUILD_TESTING)
     add_executable(batch_tests tests/batch_tests.cpp)
+    # Compile these large translation units sequentially on the small VPS.
+    add_dependencies(batch_tests mqtt_questdb_subscriber)
     target_compile_features(batch_tests PRIVATE cxx_std_17)
     target_link_libraries(batch_tests PRIVATE PahoMqttCpp::paho-mqttpp3 PkgConfig::PQXX)
     add_test(NAME sparkplug_batch_regression COMMAND batch_tests

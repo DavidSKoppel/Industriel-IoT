@@ -15,24 +15,20 @@ out/
 *.zip
 *.uf2
 *.d
-
 # SDK-managed directories (keep the SDK outside this application repository)
 .west/
 modules/
 toolchains/
 ncs/
 zephyr/
-
 # IDE and editor files
 .vscode/
 .idea/
 *.user
 *.suo
-
 # OS files
 .DS_Store
 Thumbs.db
-
 # Local secrets and credentials
 .env
 .env.*
@@ -41,3 +37,5 @@ Thumbs.db
 *.key
 credentials*.json
 secrets.*
+credentials.env
+*.log

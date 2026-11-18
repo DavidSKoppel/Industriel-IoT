@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(esp32_json_subscriber LANGUAGES CXX)
+find_package(PahoMqttCpp REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PQXX REQUIRED IMPORTED_TARGET libpqxx)
+add_executable(esp32_json_subscriber esp32_json_subscriber.cpp)
+target_compile_features(esp32_json_subscriber PRIVATE cxx_std_17)
+target_link_libraries(esp32_json_subscriber PRIVATE PahoMqttCpp::paho-mqttpp3 PkgConfig::PQXX)

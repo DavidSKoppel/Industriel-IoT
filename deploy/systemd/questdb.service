@@ -1,0 +1,41 @@
+[Unit]
+Description=QuestDB database
+Documentation=https://questdb.com/docs/deployment/systemd/
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=DK
+Group=sudo
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+SuccessExitStatus=143
+WorkingDirectory=/opt/questdb/questdb-10.0.1-rt-linux-x86-64
+ExecStartPre=/usr/bin/mkdir -p /home/DK/.questdb/db
+ExecStart=/opt/questdb/questdb-10.0.1-rt-linux-x86-64/bin/java \
+    -DQuestDB-Runtime-66535 \
+    -Dcontainerized=false \
+    -ea -Dnoebug \
+    -XX:ErrorFile=/home/DK/.questdb/db/hs_err_pid+%%p.log \
+    -XX:+UnlockExperimentalVMOptions \
+    -XX:+AlwaysPreTouch \
+    -XX:+UseParallelGC \
+    --sun-misc-unsafe-memory-access=allow \
+    --enable-native-access=io.questdb \
+    --add-opens=java.base/java.lang=io.questdb \
+    --add-opens=java.base/java.lang.reflect=io.questdb \
+    --add-opens=java.base/java.nio=io.questdb \
+    --add-opens=java.base/java.time.zone=io.questdb \
+    --add-exports=java.base/jdk.internal.vm=io.questdb \
+    -m io.questdb/io.questdb.ServerMain \
+    -d /home/DK/.questdb
+LimitNOFILE=1048576
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=questdb
+
+[Install]
+WantedBy=multi-user.target

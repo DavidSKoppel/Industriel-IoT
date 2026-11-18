@@ -1,0 +1,22 @@
+name: group7-mqtt
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.23
+    container_name: group7-mosquitto
+    user: "123:122"
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - /etc/mosquitto/certs:/mosquitto/certs:ro
+      - ./data:/mosquitto/data
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

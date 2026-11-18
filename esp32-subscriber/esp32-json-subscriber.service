@@ -1,0 +1,14 @@
+[Unit]
+Description=ESP32 JSON MQTT to QuestDB
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/esp32-json-subscriber
+EnvironmentFile=%h/.config/questdb/credentials.env
+ExecStart=%h/esp32-json-subscriber/build/esp32_json_subscriber
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

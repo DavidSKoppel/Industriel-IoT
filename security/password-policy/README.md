@@ -11,16 +11,11 @@ Kør fra denne mappe:
 ```bash
 docker build -t cr17-lab:1.0 .
 docker run -d --name cr17-lab cr17-lab:1.0
+docker exec cr17-lab python3 /opt/cr17/test_policy.py
 docker exec -it cr17-lab passwd cr17test
 ```
 
-Opret først testkontoen og kør de automatiske tests med:
-
-```bash
-docker exec cr17-lab python3 /opt/cr17/test_policy.py
-```
-
-Testscriptet bruger offentlige testpasswords på en dedikeret testkonto.
+Testscriptet opretter testkontoen og bruger offentlige testpasswords.
 Brug dem ikke til rigtige brugere. Windows' egne konti påvirkes ikke.
 
 ## På Webdock

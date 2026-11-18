@@ -28,6 +28,7 @@
 #define METRIC_FIELD_ALIAS 2U
 #define METRIC_FIELD_TIMESTAMP 3U
 #define METRIC_FIELD_DATATYPE 4U
+#define METRIC_FIELD_IS_HISTORICAL 5U
 #define METRIC_FIELD_IS_NULL 7U
 #define METRIC_FIELD_INT_VALUE 10U
 #define METRIC_FIELD_LONG_VALUE 11U
@@ -265,6 +266,9 @@ static int append_double_metric(struct protobuf_writer *payload, uint64_t alias,
 		err = append_uint_field(&metric, METRIC_FIELD_TIMESTAMP, timestamp_ms);
 	}
 	if (err == 0) {
+		err = append_uint_field(&metric, METRIC_FIELD_IS_HISTORICAL, 1U);
+	}
+	if (err == 0) {
 		err = append_double_field(&metric, METRIC_FIELD_DOUBLE_VALUE, value);
 	}
 	if (err != 0) {
@@ -286,6 +290,9 @@ static int append_uptime_metric(struct protobuf_writer *payload, uint32_t uptime
 
 	if (err == 0) {
 		err = append_uint_field(&metric, METRIC_FIELD_TIMESTAMP, timestamp_ms);
+	}
+	if (err == 0) {
+		err = append_uint_field(&metric, METRIC_FIELD_IS_HISTORICAL, 1U);
 	}
 	if (err == 0) {
 		err = append_uint_field(&metric, METRIC_FIELD_INT_VALUE, uptime_ms);
@@ -349,7 +356,8 @@ int sparkplug_encode_birth(uint8_t *buffer, size_t capacity, size_t *length,
 }
 
 int sparkplug_encode_data(uint8_t *buffer, size_t capacity, size_t *length,
-			  const struct payload *sample, uint8_t sequence)
+			  const struct payload *sample, uint8_t sequence,
+			  uint64_t published_at_ms)
 {
 	struct protobuf_writer payload = {
 		.buffer = buffer,
@@ -361,7 +369,7 @@ int sparkplug_encode_data(uint8_t *buffer, size_t capacity, size_t *length,
 		return -EINVAL;
 	}
 
-	err = append_uint_field(&payload, PAYLOAD_FIELD_TIMESTAMP, sample->timestamp_ms);
+	err = append_uint_field(&payload, PAYLOAD_FIELD_TIMESTAMP, published_at_ms);
 	if (err == 0) {
 		err = append_double_metric(&payload, 1U, sample->temperature_c,
 					   sample->timestamp_ms);

@@ -18,7 +18,8 @@ int sparkplug_encode_birth(uint8_t *buffer, size_t capacity, size_t *length,
 			   uint8_t bd_seq, const struct payload *sample,
 			   uint64_t timestamp_ms);
 int sparkplug_encode_data(uint8_t *buffer, size_t capacity, size_t *length,
-			  const struct payload *sample, uint8_t sequence);
+			  const struct payload *sample, uint8_t sequence,
+			  uint64_t published_at_ms);
 int sparkplug_encode_death(uint8_t *buffer, size_t capacity, size_t *length,
 			   uint8_t bd_seq, uint64_t timestamp_ms);
 int sparkplug_decode_rebirth(const uint8_t *buffer, size_t length, bool *requested);

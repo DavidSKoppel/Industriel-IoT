@@ -270,8 +270,15 @@ static int sparkplug_publish_data(const struct payload *sample)
 {
 	uint8_t payload[SPARKPLUG_PAYLOAD_MAX_SIZE];
 	size_t payload_size;
-	int err = sparkplug_encode_data(payload, sizeof(payload), &payload_size,
-					sample, data_sequence);
+	int64_t published_at_ms;
+	int err = date_time_now(&published_at_ms);
+
+	if (err != 0) {
+		LOG_ERR("Cannot publish Sparkplug NDATA without valid UTC time: %d", err);
+		return err;
+	}
+	err = sparkplug_encode_data(payload, sizeof(payload), &payload_size,
+				    sample, data_sequence, (uint64_t)published_at_ms);
 
 	if (err != 0) {
 		LOG_ERR("Failed to encode Sparkplug NDATA, error: %d", err);
@@ -411,8 +418,6 @@ static void maybe_start_dump(void)
 
 static int maybe_publish_birth(struct s_object *user_object)
 {
-	const struct payload *birth_sample;
-	bool from_stockpile;
 	int err;
 
 	if (!user_object->host_online || !user_object->host_state_subscribed ||
@@ -423,20 +428,11 @@ static int maybe_publish_birth(struct s_object *user_object)
 		return 0;
 	}
 
-	/* The NBIRTH carries the oldest stockpiled sample. It is then removed from the stockpile
-	 * so the dump that follows stays chronological and no reading is published twice.
+	/* NBIRTH describes the latest known state. Keep every buffered sample for
+	 * historical NDATA; the host does not insert NBIRTH into the sample table.
 	 */
-	birth_sample = sample_buf_peek();
-	from_stockpile = (birth_sample != NULL);
-	if (!from_stockpile) {
-		birth_sample = &user_object->payload;
-	}
-
-	err = sparkplug_publish_birth(birth_sample);
+	err = sparkplug_publish_birth(&user_object->payload);
 	if (err == 0) {
-		if (from_stockpile) {
-			sample_buf_pop();
-		}
 		user_object->node_born = true;
 		dump_and_disconnect(user_object);
 	}

@@ -36,6 +36,7 @@ const std::string EDGE_TOPIC_FILTER =
 const std::string NODE_COMMAND_TOPIC =
     "spBv1.0/" + GROUP_ID + "/NCMD/" + EDGE_NODE_ID;
 const std::string STATE_TOPIC = "spBv1.0/STATE/" + CLIENT_ID;
+constexpr int NODE_COMMAND_QOS = 0;
 
 class ProtoReader {
 public:
@@ -143,7 +144,9 @@ private:
 struct SparkplugMetric {
     std::string name;
     std::optional<std::uint64_t> alias;
+    std::optional<std::uint64_t> timestamp_ms;
     std::optional<double> value;
+    bool is_historical = false;
     bool is_null = false;
 };
 
@@ -165,10 +168,12 @@ bool parse_metric(std::string_view bytes, SparkplugMetric& metric)
             std::string_view name;
             if (!reader.read_bytes(name)) return false;
             metric.name.assign(name.data(), name.size());
-        } else if ((field == 2 || field == 10 || field == 11 || field == 7) && wire == 0) {
+        } else if ((field == 2 || field == 3 || field == 5 || field == 10 || field == 11 || field == 7) && wire == 0) {
             std::uint64_t value;
             if (!reader.read_varint(value)) return false;
             if (field == 2) metric.alias = value;
+            if (field == 3) metric.timestamp_ms = value;
+            if (field == 5) metric.is_historical = value != 0;
             if (field == 7) metric.is_null = value != 0;
             if (field == 10 || field == 11) metric.value = static_cast<double>(value);
         } else if (field == 12 && wire == 5) {
@@ -219,6 +224,34 @@ bool parse_payload(std::string_view bytes, SparkplugPayload& payload)
         }
     }
     return true;
+}
+
+bool sensor_metric(const std::string& name)
+{
+    return name == "uptime_ms" || name == "temperature_c" || name == "humidity_pct" ||
+           name == "pressure_kpa" || name == "gas_ohm";
+}
+
+std::uint64_t measurement_timestamp(
+    const SparkplugPayload& payload,
+    const std::unordered_map<std::uint64_t, std::string>& aliases)
+{
+    std::optional<std::uint64_t> timestamp;
+    for (const auto& metric : payload.metrics) {
+        std::string name = metric.name;
+        if (name.empty() && metric.alias) {
+            const auto found = aliases.find(*metric.alias);
+            if (found != aliases.end()) name = found->second;
+        }
+        if (!sensor_metric(name) || metric.is_null || !metric.value || !metric.timestamp_ms) continue;
+        if (timestamp && *timestamp != *metric.timestamp_ms)
+            throw std::runtime_error("Sensor metrics have inconsistent measurement timestamps");
+        timestamp = metric.timestamp_ms;
+    }
+    // Historical metrics retain acquisition time independently of publication time.
+    if (timestamp) return *timestamp;
+    if (payload.timestamp_ms) return *payload.timestamp_ms;
+    throw std::runtime_error("Sensor sample has no timestamp");
 }
 
 std::int64_t current_time_ms()
@@ -286,9 +319,41 @@ std::string rebirth_command(std::uint64_t timestamp_ms)
     std::string payload;
     append_uint_field(payload, 1, timestamp_ms);
     append_bytes_field(payload, 2, metric);
-    append_uint_field(payload, 3, 0); // first Host command in this session
     return payload;
 }
+
+std::optional<std::uint64_t> birth_death_sequence(const SparkplugPayload& payload)
+{
+    std::optional<std::uint64_t> result;
+    for (const auto& metric : payload.metrics) {
+        if (metric.name != "bdSeq") continue;
+        if (result || metric.is_null || !metric.value ||
+            !std::isfinite(*metric.value) || *metric.value < 0 ||
+            *metric.value > 255 || std::floor(*metric.value) != *metric.value)
+            return std::nullopt;
+        result = static_cast<std::uint64_t>(*metric.value);
+    }
+    return result;
+}
+
+struct BirthDeathSession {
+    std::optional<std::uint64_t> bd_seq;
+
+    void begin(const SparkplugPayload& birth)
+    {
+        const auto next = birth_death_sequence(birth);
+        if (!next) throw std::runtime_error("NBIRTH has no valid bdSeq");
+        bd_seq = next;
+    }
+
+    bool end(const SparkplugPayload& death)
+    {
+        const auto received = birth_death_sequence(death);
+        if (!bd_seq || !received || *bd_seq != *received) return false;
+        bd_seq.reset();
+        return true;
+    }
+};
 
 std::string host_state(bool online, std::int64_t timestamp_ms)
 {
@@ -313,8 +378,8 @@ static void ensure_questdb_table()
     pqxx::work txn(conn);
     txn.exec(
         "CREATE TABLE IF NOT EXISTS thingy91x_data ("
-        "ts TIMESTAMP, device_id SYMBOL, uptime_ms LONG, "
-        "temperature_c DOUBLE, humidity_pct DOUBLE, pressure_kpa DOUBLE, gas_ohm DOUBLE"
+        "ts TIMESTAMP, device_id STRING, date_time DATE, "
+        "temperature DOUBLE, humidity DOUBLE, airpressure DOUBLE, gas DOUBLE"
         ") TIMESTAMP(ts) PARTITION BY DAY;"
     );
     txn.commit();
@@ -326,6 +391,7 @@ private:
     mqtt::async_client& client;
     std::mutex state_mutex;
     std::unordered_map<std::uint64_t, std::string> aliases;
+    BirthDeathSession node_session;
     bool rebirth_requested = false;
 
     void request_rebirth()
@@ -338,7 +404,7 @@ private:
         try {
             client.publish(NODE_COMMAND_TOPIC,
                            rebirth_command(static_cast<std::uint64_t>(current_time_ms())),
-                           1, false);
+                           NODE_COMMAND_QOS, false);
             std::cout << "Requested Sparkplug node rebirth" << std::endl;
         } catch (const mqtt::exception& e) {
             std::lock_guard<std::mutex> lock(state_mutex);
@@ -354,16 +420,21 @@ private:
             throw std::runtime_error("Malformed Sparkplug NBIRTH Protobuf payload");
         }
 
-        std::lock_guard<std::mutex> lock(state_mutex);
-        aliases.clear();
-        rebirth_requested = false;
-        for (const auto& metric : payload.metrics) {
-            if (metric.alias && !metric.name.empty() && metric.name != "bdSeq") {
-                aliases[*metric.alias] = metric.name;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            node_session.begin(payload);
+            aliases.clear();
+            rebirth_requested = false;
+            for (const auto& metric : payload.metrics) {
+                if (metric.alias && !metric.name.empty() && metric.name != "bdSeq") {
+                    aliases[*metric.alias] = metric.name;
+                }
             }
+            std::cout << "Received Sparkplug NBIRTH on " << topic << "; registered "
+                      << aliases.size() << " metric aliases" << std::endl;
         }
-        std::cout << "Received Sparkplug NBIRTH on " << topic << "; registered "
-                  << aliases.size() << " metric aliases" << std::endl;
+        // NBIRTH defines current state and aliases. All buffered measurements,
+        // including the newest one, arrive separately as historical NDATA.
     }
 
     void handle_data(const std::string& topic, std::string_view bytes)
@@ -387,7 +458,7 @@ private:
 
         std::unordered_map<std::string, double> values;
         for (const auto& metric : payload.metrics) {
-            if (!metric.value || !metric.alias) continue;
+            if (metric.is_null || !metric.value || !metric.alias) continue;
             const auto alias = known_aliases.find(*metric.alias);
             if (alias != known_aliases.end()) {
                 values[alias->second] = *metric.value;
@@ -406,25 +477,28 @@ private:
             return it->second;
         };
 
-        const auto uptime_ms = static_cast<std::int64_t>(get("uptime_ms"));
         const double temperature_c = get("temperature_c");
         const double humidity_pct = get("humidity_pct");
         const double pressure_kpa = get("pressure_kpa");
         const double gas_ohm = get("gas_ohm");
         const std::string device_id = topic.substr(topic.find_last_of('/') + 1);
-        const std::string sample_timestamp = format_questdb_timestamp(*payload.timestamp_ms);
+        const std::string sample_timestamp = format_questdb_timestamp(
+            measurement_timestamp(payload, known_aliases));
 
         pqxx::connection conn(db_connection());
         pqxx::work txn(conn);
         txn.exec_params(
             "INSERT INTO thingy91x_data "
-            "(ts, device_id, uptime_ms, temperature_c, humidity_pct, pressure_kpa, gas_ohm) "
-            "VALUES (to_timestamp($1, 'yyyy-MM-ddTHH:mm:ss.SSSZ'), $2, $3, $4, $5, $6, $7);",
-            sample_timestamp, device_id, uptime_ms, temperature_c, humidity_pct,
+            "(ts, date_time, device_id, temperature, humidity, airpressure, gas) "
+            "VALUES (now(), "
+            "cast(to_timestamp($1, 'yyyy-MM-ddTHH:mm:ss.SSSZ') as date), $2, $3, $4, $5, $6);",
+            sample_timestamp, device_id, temperature_c, humidity_pct,
             pressure_kpa, gas_ohm);
         txn.commit();
 
-        std::cout << "Stored Sparkplug NDATA from " << device_id
+        std::cout << "Stored Sparkplug "
+                  << (topic.find("/NBIRTH/") != std::string::npos ? "NBIRTH" : "NDATA")
+                  << " from " << device_id
                   << " (sequence " << payload.sequence.value_or(0) << ") in QuestDB"
                   << std::endl;
     }
@@ -435,6 +509,7 @@ public:
     void reset_session()
     {
         std::lock_guard<std::mutex> lock(state_mutex);
+        node_session.bd_seq.reset();
         aliases.clear();
         rebirth_requested = false;
     }
@@ -448,6 +523,7 @@ public:
     void connection_lost(const std::string& cause) override
     {
         std::lock_guard<std::mutex> lock(state_mutex);
+        node_session.bd_seq.reset();
         aliases.clear();
         rebirth_requested = false;
         std::cerr << "MQTT connection lost";
@@ -467,7 +543,15 @@ public:
             } else if (topic.find("/NDATA/") != std::string::npos) {
                 handle_data(topic, bytes);
             } else if (topic.find("/NDEATH/") != std::string::npos) {
+                SparkplugPayload death;
+                if (!parse_payload(bytes, death))
+                    throw std::runtime_error("Malformed Sparkplug NDEATH Protobuf payload");
                 std::lock_guard<std::mutex> lock(state_mutex);
+                if (!node_session.end(death)) {
+                    std::cout << "Ignored NDEATH with missing or non-current bdSeq on "
+                              << topic << std::endl;
+                    return;
+                }
                 aliases.clear();
                 rebirth_requested = false;
                 std::cout << "Received Sparkplug NDEATH on " << topic << std::endl;

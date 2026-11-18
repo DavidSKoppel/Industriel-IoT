@@ -1,0 +1,14 @@
+[Unit]
+Description=Thingy Sparkplug MQTT to QuestDB
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/thingy91x-sparkplug
+EnvironmentFile=%h/.config/questdb/credentials.env
+ExecStart=%h/thingy91x-sparkplug/build/mqtt_questdb_subscriber /etc/mosquitto/certs/ca.crt
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

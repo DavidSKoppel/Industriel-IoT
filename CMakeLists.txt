@@ -16,3 +16,12 @@ target_link_libraries(mqtt_questdb_subscriber PRIVATE
     PahoMqttCpp::paho-mqttpp3
     PkgConfig::PQXX
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(batch_tests tests/batch_tests.cpp)
+    target_compile_features(batch_tests PRIVATE cxx_std_17)
+    target_link_libraries(batch_tests PRIVATE PahoMqttCpp::paho-mqttpp3 PkgConfig::PQXX)
+    add_test(NAME sparkplug_batch_regression COMMAND batch_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/corrected-batch-fixtures.txt")
+endif()

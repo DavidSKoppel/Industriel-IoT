@@ -1,1 +1,9 @@
 /build/
+
+.env
+.env.*
+credentials.env
+*.key
+build/
+build-*/
+*.log

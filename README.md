@@ -1,71 +1,75 @@
-# Sparkplug B to QuestDB subscriber
+# Thingy Sparkplug-subscriber
 
-C++ MQTT subscriber for Thingy:91 X sensor readings. It connects to the Webdock Mosquitto broker over TLS, subscribes to the Sparkplug B topic for the Thingy, decodes the Protobuf payloads, and inserts the measurements into a local QuestDB instance.
+Modtager Thingys Sparkplug B/Protobuf fra Mosquitto og gemmer målingerne i QuestDB.
+Brug denne branch sammen med den aktuelle `mqtt-publisher-thingy`.
 
-## Sparkplug B data flow
+## Hent og byg på Ubuntu
 
-The Thingy is the Sparkplug Edge Node. Its group ID is `Group7` and its node ID is `thingy91x-01`. It publishes Sparkplug B Protobuf messages on:
-
-```text
-spBv1.0/Group7/NBIRTH/thingy91x-01
-spBv1.0/Group7/NDATA/thingy91x-01
-spBv1.0/Group7/NDEATH/thingy91x-01
-```
-
-`NBIRTH` announces the five metric names and aliases: temperature, humidity, pressure, gas resistance, and uptime. It includes their current values plus the `bdSeq` and required `Node Control/Rebirth` metrics. Each sensor sample is then sent as a timestamped `NDATA` payload using those aliases. `NBIRTH` and `NDATA` use QoS 0. `NDEATH` is configured as the broker's non-retained QoS 1 Last Will so an unexpected disconnect marks the node offline. The Edge Node subscribes to `NCMD` for rebirth requests and waits for the retained Primary Host `STATE` before publishing a birth. The sensor sampling interval remains configured in the Zephyr application.
-
-The subscriber acts as the Sparkplug Host Application: it subscribes to the node's Sparkplug topics, then publishes a retained online JSON `STATE` with a matching offline Last Will. Each MQTT session gets a fresh timestamp shared by its online `STATE` and Last Will. If it receives `NDATA` before `NBIRTH`, it sends an `NCMD` `Node Control/Rebirth` request so the Edge Node can reannounce its metric aliases. It decodes the Protobuf payload, maps metric aliases back to names, and stores each sample in QuestDB using the sample's UTC timestamp. The implementation handles the numeric Protobuf fields used by this project, following Eclipse Tahu's `sparkplug_b.proto` schema; it is a project-specific subset, not a general-purpose Sparkplug library.
-
-The NCS MQTT Helper exposes Last Will configuration only as a build-time text value, while Sparkplug `NDEATH` is binary Protobuf. The firmware therefore makes one initial MQTT connection to attach the binary Last Will to the helper's MQTT client, disconnects, and reconnects before publishing `NBIRTH`. The second connection is the active Sparkplug session.
-
-## Get the project
-
-Clone the Sparkplug subscriber branch from GitHub and enter the repository folder:
-
-```sh
-git clone --branch mqtt-sparkplug-subscriber https://github.com/DavidSKoppel/Industriel-IoT.git
-cd Industriel-IoT
-```
-
-## Install build dependencies (Ubuntu/Debian)
-
-```sh
-sudo apt update
-sudo apt install -y build-essential cmake libssl-dev ca-certificates \
-  libpaho-mqtt-dev libpaho-mqttpp-dev libpqxx-dev pkg-config
-```
-
-## Configure and compile
-
-Run these commands from the repository directory (the one containing `CMakeLists.txt`):
-
-```sh
+```bash
+git clone --branch mqtt-sparkplug-subscriber https://github.com/DavidSKoppel/Industriel-IoT.git ~/thingy91x-sparkplug
+cd ~/thingy91x-sparkplug
+sudo apt install build-essential cmake pkg-config libssl-dev libpaho-mqtt-dev libpaho-mqttpp-dev libpqxx-dev
 cmake -S . -B build
-cmake --build build --parallel
+cmake --build build --parallel 2
+ctest --test-dir build --output-on-failure
 ```
 
-The executable will be created at `build/mqtt_questdb_subscriber`. `cmake -S . -B build` configures the project; `cmake --build build --parallel` compiles it. If CMake reports a missing dependency, check that the packages above installed successfully.
+Testene kontrollerer format, tidsstempler og forbindelser uden at indsætte testdata i QuestDB.
 
-## Run
+## Start manuelt
 
-QuestDB must be running on the same machine and accept PostgreSQL wire-protocol
-connections on port `8812`. Set the database password in the environment before
-running the subscriber; do not put it in the source code or commit it:
+QuestDB skal køre på samme server med PostgreSQL-port `8812`.
+Sæt adgangskoden i **samme terminal**, som du starter programmet fra:
 
-```sh
-export QUESTDB_PASSWORD='your-QuestDB-password'
+```bash
+export QUESTDB_PASSWORD='din-QuestDB-adgangskode'
+./build/mqtt_questdb_subscriber /etc/mosquitto/certs/ca.crt
 ```
 
-If the broker's CA certificate is installed in the system trust store:
+Erstat teksten med din adgangskode. Den skal ikke skrives ind i kildekoden.
+Broker er `gruppe7.vps.webdock.cloud:8883` med TLS.
 
-```sh
-./build/mqtt_questdb_subscriber
+## Sådan behandles en batch
+
+1. NBIRTH beskriver de nyeste værdier og sensorernes aliases. Den gemmes ikke som en ekstra måling.
+2. 30 NDATA-beskeder indeholder de gemte målinger, markeret som historiske.
+3. NDEATH afslutter forbindelsen, hvis dens `bdSeq` matcher den seneste NBIRTH.
+
+En rebirth-anmodning sendes som NCMD med QoS 0 og uden `seq`.
+Subscriberen annoncerer sin status på `spBv1.0/STATE/questdb-subscriber-01`.
+
+I `thingy91x_data` er `ts` databasens modtagelsestid. `date_time` er måletiden.
+Kolonnerne `temperature`, `humidity`, `airpressure` og `gas` indeholder °C, %, kPa og ohm.
+Der tilføjes ikke en ekstra `measured_at`-kolonne.
+
+```sql
+SELECT to_str(to_timezone(ts, 'Europe/Copenhagen'), 'dd/MM/yyyy HH:mm:ss') AS modtaget,
+       device_id, temperature, humidity, airpressure, gas
+FROM thingy91x_data ORDER BY ts DESC LIMIT 30;
 ```
 
-Otherwise, provide the CA certificate file as the only argument:
+## Automatisk opstart på Webdock
 
-```sh
-./build/mqtt_questdb_subscriber /path/to/ca.crt
+Programmet ligger i `/home/EF/thingy91x-sparkplug/build`.
+Password ligger i `~/.config/questdb/credentials.env` som `QUESTDB_PASSWORD=...`.
+Filen skal kun kunne læses af brugeren: `chmod 600 ~/.config/questdb/credentials.env`.
+
+Den vedlagte service kan installeres efter build og oprettelse af password-filen:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/mqtt-questdb-subscriber.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now mqtt-questdb-subscriber
+sudo loginctl enable-linger "$USER"
 ```
 
-The subscriber validates the broker certificate. Keep the broker hostname in the TLS URL so hostname verification can be performed. The current sample does not configure MQTT username/password authentication.
+På den nuværende Webdock er servicen allerede installeret. Brug:
+
+```bash
+systemctl --user status mqtt-questdb-subscriber --no-pager
+journalctl --user -u mqtt-questdb-subscriber -n 30 --no-pager
+```
+
+Testet 18/11/2026 kl. 12:54 dansk tid: 32 beskeder gav 30 unikke målinger i QuestDB.
+Det er en projektspecifik Sparkplug-implementering, ikke en fuld certificering.

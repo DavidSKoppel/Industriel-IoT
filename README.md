@@ -32,7 +32,6 @@ Brug publisher- og subscriber-brancherne til den aktuelle Thingy-løsning.
 - PSM anmoder om 10 sekunders aktiv tid og TAU på 1800 sekunder. Mobilnettet afgør de godkendte tider.
 
 Mosquitto kører i Docker **på Webdock**. QuestDB og subscriberne kører som services uden for Docker.
-Docker Desktop på en gruppemedlems pc skal ikke være startet for at løsningen virker.
 
 ## Seneste test
 

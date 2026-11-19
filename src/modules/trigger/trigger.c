@@ -12,6 +12,7 @@
 #endif /* CONFIG_DK_LIBRARY */
 
 #include "message_channel.h"
+#include "thingy_status.h"
 
 /* Register log module */
 LOG_MODULE_REGISTER(trigger, CONFIG_MQTT_SAMPLE_TRIGGER_LOG_LEVEL);
@@ -31,9 +32,15 @@ static void message_send(void)
 #if CONFIG_DK_LIBRARY
 static void button_handler(uint32_t button_states, uint32_t has_changed)
 {
+#if THINGY_STATUS_ENABLED
+	if (has_changed & button_states & DK_BTN1_MSK) {
+		thingy_status_replay();
+	}
+#else
 	if (has_changed & button_states) {
 		message_send();
 	}
+#endif
 }
 #endif /* CONFIG_DK_LIBRARY */
 

@@ -5,8 +5,9 @@ lufttryk og gasmodstand. Data sendes via mobilnettet til Webdock med MQTT/TLS.
 
 ## Data og strømbesparelse
 
-- Måling hvert 10. sekund; afsendelse efter 30 opsamlede målinger.
-- NBIRTH beskriver de nyeste værdier. Alle 30 målinger sendes derefter som historiske NDATA.
+- Thingy sender ved første gyldige måling, så snart forbindelsen er klar.
+- Derefter måler Thingy hvert 10. sekund og sender en batch efter 30 målinger.
+- NBIRTH beskriver de nyeste værdier. De opsamlede målinger sendes derefter som historiske NDATA.
 - NDEATH afslutter forbindelsen, så modemmet kan gå i PSM.
 - PSM anmoder om 10 sekunders aktiv tid og TAU på 1800 sekunder. Mobilnettet afgør de godkendte tider.
 - Måletid ligger på hver metric; beskedens timestamp er afsendelsestiden.
@@ -15,7 +16,7 @@ Broker: `gruppe7.vps.webdock.cloud:8883`. Gruppe: `Group7`. Enhed: `thingy91x-01
 Topics: `spBv1.0/Group7/NBIRTH/thingy91x-01`, tilsvarende `NDATA`, `NDEATH` og `NCMD`.
 
 Brug subscriberen på [mqtt-sparkplug-subscriber](https://github.com/DavidSKoppel/Industriel-IoT/tree/mqtt-sparkplug-subscriber).
-Den gemmer kun NDATA: 32 beskeder giver 30 målinger, uden en ekstra kopi fra NBIRTH.
+Den gemmer NDATA. En normal batch på 32 beskeder giver 30 målinger.
 QuestDB `ts` er modtagelsestiden; `date_time` er den oprindelige måletid.
 
 ## Byg og flash i Windows
@@ -29,6 +30,14 @@ west thingy91x-dfu --image "$env:USERPROFILE\sp-build\dfu_application.zip"
 
 Tilslut Thingy via USB, tænd den og luk den serielle monitor før flash.
 Den korte build-sti undgår problemer med lange Windows-stier.
+
+## Statuslys
+
+- Gul blinker, mens Thingy forbinder. Grøn lyser, når MQTT er forbundet.
+- Blå blinker under afsendelse, efterfulgt af kort grønt lys.
+- Rød blinker ved fejl opdaget af Thingy, f.eks. hvis en MQTT-afsendelse fejler.
+- Lyset er slukket i modemets dvale og mellem batches efter den korte visning.
+- Et tryk på topknappen viser den seneste farve i cirka ét sekund.
 
 ## Vigtige filer
 

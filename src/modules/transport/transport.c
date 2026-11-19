@@ -19,6 +19,7 @@
 #include "client_id.h"
 #include "message_channel.h"
 #include "sparkplug_codec.h"
+#include "thingy_status.h"
 
 /* Register log module */
 LOG_MODULE_REGISTER(transport, CONFIG_MQTT_SAMPLE_TRANSPORT_LOG_LEVEL);
@@ -78,8 +79,8 @@ static uint8_t data_sequence;
 
 /* Sample stockpile.
  *
- * Samples arrive on PAYLOAD_CHAN every trigger interval, but they are only transmitted in one
- * burst ("dump") once CONFIG_MQTT_SAMPLE_TRANSPORT_DUMP_SAMPLE_COUNT of them have been collected.
+ * Send the first available sample at startup. Then send samples in bursts once
+ * CONFIG_MQTT_SAMPLE_TRANSPORT_DUMP_SAMPLE_COUNT of them have been collected.
  * The MQTT connection only exists while a dump is in progress, so between dumps the modem is
  * idle and can enter PSM.
  *
@@ -93,6 +94,7 @@ static struct payload sample_buf[CONFIG_MQTT_SAMPLE_TRANSPORT_SAMPLE_BUFFER_SIZE
 static size_t sample_head;	/* Index of the oldest stockpiled sample */
 static size_t sample_count;	/* Number of stockpiled samples */
 static bool dump_requested;	/* A dump is due (or in progress) and the broker should be connected */
+static bool startup_dump_complete;
 static bool delay_next_connect;	/* Wait for the reconnection timeout before the next attempt */
 
 enum transport_event_type {
@@ -231,6 +233,7 @@ static int mqtt_publish_binary(const uint8_t *topic, size_t topic_size,
 
 	if (err != 0) {
 		LOG_ERR("Failed to publish Sparkplug message, error: %d", err);
+		thingy_status_error();
 		return err;
 	}
 
@@ -381,10 +384,13 @@ static void dump_and_disconnect(struct s_object *user_object)
 		 * reconnect path retry once the reconnection timeout has elapsed.
 		 */
 		delay_next_connect = true;
+		thingy_status_set(THINGY_CONNECTING);
+		thingy_status_error();
 		(void)mqtt_helper_disconnect();
 		return;
 	}
 
+	startup_dump_complete = true;
 	dump_requested = false;
 
 	/* A clean MQTT disconnect does not make the broker send the Last Will, so tell the host
@@ -395,15 +401,18 @@ static void dump_and_disconnect(struct s_object *user_object)
 	if (IS_ENABLED(CONFIG_MQTT_SAMPLE_TRANSPORT_PUBLISH_NDEATH_AFTER_DUMP)) {
 		(void)sparkplug_publish_death();
 	}
+	thingy_status_set(THINGY_SENT);
 
 	LOG_INF("Closing the MQTT connection until the next dump");
 	(void)mqtt_helper_disconnect();
 }
 
-/* Start a dump (connect to the broker) once enough samples have been stockpiled. */
+/* Connect for the startup reading or when a regular batch is ready. */
 static void maybe_start_dump(void)
 {
-	if (dump_requested || sample_count < CONFIG_MQTT_SAMPLE_TRANSPORT_DUMP_SAMPLE_COUNT) {
+	if (dump_requested || sample_count == 0U ||
+	    (startup_dump_complete &&
+	     sample_count < CONFIG_MQTT_SAMPLE_TRANSPORT_DUMP_SAMPLE_COUNT)) {
 		return;
 	}
 
@@ -431,10 +440,16 @@ static int maybe_publish_birth(struct s_object *user_object)
 	/* NBIRTH describes the latest known state. Keep every buffered sample for
 	 * historical NDATA; the host does not insert NBIRTH into the sample table.
 	 */
+	thingy_status_set(THINGY_SENDING);
 	err = sparkplug_publish_birth(&user_object->payload);
 	if (err == 0) {
 		user_object->node_born = true;
 		dump_and_disconnect(user_object);
+	} else {
+		thingy_status_set(THINGY_CONNECTING);
+		thingy_status_error();
+		delay_next_connect = true;
+		(void)mqtt_helper_disconnect();
 	}
 	return err;
 }
@@ -452,6 +467,7 @@ static void on_mqtt_connack(enum mqtt_conn_return_code return_code, bool session
 
 	if (return_code != MQTT_CONNECTION_ACCEPTED) {
 		LOG_ERR("MQTT broker rejected connection, return code: %d", return_code);
+		thingy_status_error();
 		k_work_reschedule_for_queue(&transport_queue, &connect_work,
 					    K_SECONDS(CONFIG_MQTT_SAMPLE_TRANSPORT_RECONNECTION_TIMEOUT_SECONDS));
 		return;
@@ -508,7 +524,9 @@ static bool on_mqtt_all_events(struct mqtt_client *client, const struct mqtt_evt
 
 static void on_mqtt_disconnect(int result)
 {
-	ARG_UNUSED(result);
+	if (result != 0) {
+		thingy_status_error();
+	}
 	transport_event_publish(DISCONNECTED, 0U);
 }
 
@@ -628,6 +646,7 @@ static void on_mqtt_suback(uint16_t message_id, int result)
 	} else if (message_id == HOST_STATE_SUBSCRIPTION_ID ||
 		   message_id == NODE_COMMAND_SUBSCRIPTION_ID) {
 		LOG_ERR("Sparkplug subscription %u failed, result: %d", message_id, result);
+		thingy_status_error();
 	}
 }
 
@@ -720,9 +739,11 @@ static void connect_work_fn(struct k_work *work)
 		}
 	}
 
+	thingy_status_set(THINGY_CONNECTING);
 	err = mqtt_helper_connect(&conn_params);
 	if (err) {
 		LOG_ERR("Failed connecting to MQTT, error code: %d", err);
+		thingy_status_error();
 		k_work_reschedule_for_queue(&transport_queue, &connect_work,
 					    K_SECONDS(CONFIG_MQTT_SAMPLE_TRANSPORT_RECONNECTION_TIMEOUT_SECONDS));
 	}
@@ -802,12 +823,14 @@ static void connected_entry(void *o)
 	}
 
 	LOG_INF("Connected to MQTT broker: %s", CONFIG_MQTT_SAMPLE_TRANSPORT_BROKER_HOSTNAME);
+	thingy_status_set(THINGY_CONNECTED);
 	LOG_INF("Sparkplug Edge Node: %s", client_id);
 	user_object->host_online = false;
 	user_object->node_born = false;
 	user_object->host_state_subscribed = false;
 	user_object->node_command_subscribed = false;
 	if (subscribe_to_node_commands() != 0 || subscribe_to_host_state() != 0) {
+		thingy_status_error();
 		(void)mqtt_helper_disconnect();
 	}
 }
@@ -936,7 +959,6 @@ static void transport_task(void)
 			s_obj.payload = payload;
 			s_obj.sample_seen = true;
 
-			/* Stockpile the sample; connect and dump once enough have been collected. */
 			sample_buf_push(&payload);
 			maybe_start_dump();
 		}
